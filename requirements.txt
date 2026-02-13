@@ -3,3 +3,34 @@ groq
 streamlit
 streamlit-mic-recorder
 gTTS
+const sendMessageToAI = async (userMessage) => {
+  const API_KEY = "APNAR_API_KEY_EKHANE_DIN"; // Kokhono eta public rakhben na
+  const API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${API_KEY}`;
+
+  try {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{ text: userMessage }]
+        }]
+      }),
+    });
+
+    const data = await response.json();
+    
+    // AI er response-ta UI-te dekhano
+    if (data.candidates && data.candidates[0].content.parts[0].text) {
+      return data.candidates[0].content.parts[0].text;
+    } else {
+      throw new Error("Invalid response from AI");
+    }
+
+  } catch (error) {
+    console.error("Error:", error);
+    return "Opps! Kono somossa hoyeche. Abar chesta korun.";
+  }
+};
