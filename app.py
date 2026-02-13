@@ -1,60 +1,49 @@
-import streamlit as st
-from groq import Groq
-
-st.set_page_config(page_title="Sovereign AI", page_icon="👑")
-st.title("👑 Sovereign AI")
-
-# এটি আপনার ফ্রি API কী
-client = Groq(api_key=st.secrets.get("GROQ_API_KEY", "gsk_Xm9f8R7yQz2Wp4Vn6K1bL3m0N7a5S9d8f7G6h5J4k3L2m1N0"))
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-for message in st.session_state.messages:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
-
-if prompt := st.chat_input("মালিক, হুকুম করুন..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user"):
-        st.markdown(prompt)
-
-    with st.chat_message("assistant"):
-        completion = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": m["role"], "content": m["content"]} for m in st.session_state.messages]
-        )
-        response = completion.choices[0].message.content
-        st.markdown(response)
-        st.session_state.messages.append({"role": "assistant", "content": response})
-import streamlit as st
-from streamlit_mic_recorder import speech_to_text
-from gtts import gTTS
 import os
+from fastapi import FastAPI, Depends, HTTPException
+from motor.motor_asyncio import AsyncIOMotorClient # MongoDB Async Driver
+from pydantic import BaseModel
+from google import genai
 
-st.title("🎙️ আমার ভয়েস অ্যাসিস্ট্যান্ট")
+app = FastAPI()
 
-# ইউজারের কথা শোনার জন্য বাটন
-text_input = speech_to_text(
-    language='bn', 
-    start_prompt="কথা বলতে এখানে চাপ দিন", 
-    stop_prompt="থামুন", 
-    just_once=True, 
-    key='STT'
-)
+# --- 1. Database Connection ---
+MONGO_URL = "mongodb://localhost:27017" # Apnar MongoDB link
+client_db = AsyncIOMotorClient(MONGO_URL)
+db = client_db.my_advance_app
 
-# ইউজার কথা বললে অ্যাপ উত্তর দেবে
-if text_input:
-    st.write(f"আপনি বলেছেন: {text_input}")
-    
-    # অ্যাপ যা বলবে (এটি আপনি আপনার মতো পরিবর্তন করতে পারেন)
-    reply_text = f"আপনি বললেন {text_input}, আমি আপনাকে কিভাবে সাহায্য করতে পারি?"
-    
-    # টেক্সট থেকে অডিও তৈরি
-    tts = gTTS(text=reply_text, lang='bn')
-    tts.save("response.mp3")
-    
-    # অডিও প্লে করা
-    audio_file = open("response.mp3", "rb")
-    st.audio(audio_file.read(), format="audio/mp3", autoplay=True)
-    audio_file.close()
+# --- 2. AI Setup ---
+ai_client = genai.Client(api_key="YOUR_GEMINI_API_KEY")
+
+# --- 3. Data Schema ---
+class ChatRequest(BaseModel):
+    user_id: str
+    message: str
+
+# --- 4. Advanced Logic Endpoint ---
+@app.post("/api/v1/chat")
+async def handle_chat(request: ChatRequest):
+    # Step A: User-er message Database-e save kora
+    await db.history.insert_one({
+        "user_id": request.user_id,
+        "message": request.message,
+        "role": "user"
+    })
+
+    # Step B: Gemini 3 Flash theke response neya
+    try:
+        response = ai_client.models.generate_content(
+            model="gemini-3-flash",
+            contents=request.message
+        )
+        ai_reply = response.text
+    except Exception as e:
+        raise HTTPException(status_code=500, detail="AI Service Error")
+
+    # Step C: AI response-o save kora (History-r jonno)
+    await db.history.insert_one({
+        "user_id": request.user_id,
+        "message": ai_reply,
+        "role": "assistant"
+    })
+
+    return {"status": "success", "reply": ai_reply}
