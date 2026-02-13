@@ -1,2 +1,5 @@
 streamlit
 groq
+streamlit
+streamlit-mic-recorder
+gTTS
