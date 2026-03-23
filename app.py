@@ -1,112 +1,93 @@
+import pandas as pd
+import requests
+import time
 import os
-from fastapi import FastAPI, Depends, HTTPException
-from motor.motor_asyncio import AsyncIOMotorClient # MongoDB Async Driver
-from pydantic import BaseModel
-from google import genai
+from datetime import datetime
 
-app = FastAPI()
+# --- সেটিংস ---
+SYMBOL = "ETHUSDT"
+INTERVAL = "15m"  # দ্রুত রেসপন্সের জন্য ১৫ মিনিট সেট করা হয়েছে
+TRAILING_PERCENT = 0.01  # ১% দাম বাড়লে স্টপ লস উপরে উঠবে
 
-# --- 1. Database Connection ---
-MONGO_URL = "mongodb://localhost:27017" # Apnar MongoDB link
-client_db = AsyncIOMotorClient(MONGO_URL)
-db = client_db.my_advance_app
+# পারফরম্যান্স ট্র্যাকিং ফাইল
+LOG_FILE = "trade_log.csv"
 
-# --- 2. AI Setup ---
-ai_client = genai.Client(api_key="YOUR_GEMINI_API_KEY")
-
-# --- 3. Data Schema ---
-class ChatRequest(BaseModel):
-    user_id: str
-    message: str
-
-# --- 4. Advanced Logic Endpoint ---
-@app.post("/api/v1/chat")
-async def handle_chat(request: ChatRequest):
-    # Step A: User-er message Database-e save kora
-    await db.history.insert_one({
-        "user_id": request.user_id,
-        "message": request.message,
-        "role": "user"
-    })
-
-    # Step B: Gemini 3 Flash theke response neya
+def get_live_data():
+    url = "https://api.binance.com/api/v3/klines"
+    params = {"symbol": SYMBOL, "interval": INTERVAL, "limit": 100}
     try:
-        response = ai_client.models.generate_content(
-            model="gemini-3-flash",
-            contents=request.message
-        )
-        ai_reply = response.text
+        response = requests.get(url, params=params, timeout=10)
+        df = pd.DataFrame(response.json(), columns=['time', 'open', 'high', 'low', 'close', 'vol', 'close_time', 'q_vol', 'trades', 't_base', 't_quote', 'ignore'])
+        df['close'] = df['close'].astype(float)
+        df['high'] = df['high'].astype(float)
+        df['low'] = df['low'].astype(float)
+        return df
     except Exception as e:
-        raise HTTPException(status_code=500, detail="AI Service Error")
+        print(f"Error: {e}")
+        return None
 
-    # Step C: AI response-o save kora (History-r jonno)
-    await db.history.insert_one({
-        "user_id": request.user_id,
-        "message": ai_reply,
-        "role": "assistant"
-    })
+def log_performance(signal, price):
+    # সিগন্যালগুলো একটি ফাইলে সেভ করে রাখবে যাতে পরে চেক করতে পারেন
+    if not os.path.isfile(LOG_FILE):
+        df = pd.DataFrame(columns=['Time', 'Signal', 'Price'])
+        df.to_csv(LOG_FILE, index=False)
+    
+    new_data = pd.DataFrame([[datetime.now(), signal, price]], columns=['Time', 'Signal', 'Price'])
+    new_data.to_csv(LOG_FILE, mode='a', header=False, index=False)
 
-    return {"status": "success", "reply": ai_reply}
-import React, { useState } from 'react';
+def analyze_advanced(df):
+    # RSI
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+    rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
+    
+    # EMA 20 & 50
+    ema_20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
+    ema_50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
+    
+    # MACD
+    exp1 = df['close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['close'].ewm(span=26, adjust=False).mean()
+    macd = exp1 - exp2
+    signal_line = macd.ewm(span=9, adjust=False).mean()
+    
+    current_price = df['close'].iloc[-1]
+    m_val = macd.iloc[-1]
+    s_val = signal_line.iloc[-1]
 
-const AdvancedChatApp = () => {
-  const [messages, setMessages] = useState([
-    { id: 1, text: "Hello! Ami Gemini 3 Flash. Kivabe sahayyo korte pari?", sender: "ai" }
-  ]);
-  const [input, setInput] = useState("");
+    print(f"\n--- {SYMBOL} ADVANCED ANALYSIS ---")
+    print(f"Price: ${current_price:.2f} | RSI: {rsi:.2f} | MACD: {m_val:.2f}")
+    
+    # অ্যাডভান্সড সিগন্যাল লজিক
+    signal = "🟡 NEUTRAL"
+    if rsi < 35 and current_price > ema_20 and m_val > s_val:
+        signal = "🚀 STRONG BUY"
+    elif rsi > 65 or (current_price < ema_20 and m_val < s_val):
+        signal = "⚠️ STRONG SELL"
+    
+    return signal, current_price
 
-  const handleSend = () => {
-    if (input.trim()) {
-      setMessages([...messages, { id: Date.now(), text: input, sender: "user" }]);
-      setInput("");
-      // Ekhane AI API call korar logic thakbe
-    }
-  };
+# --- মেইন লুপ ---
+print(f"Starting Ultimate Bot for {SYMBOL}...")
+last_signal = ""
+highest_price = 0
 
-  return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-black text-white p-4 flex flex-col items-center">
-      {/* Header */}
-      <div className="w-full max-w-2xl flex justify-between items-center mb-8 p-4 bg-white/10 backdrop-blur-md rounded-2xl border border-white/20">
-        <h1 className="text-xl font-bold bg-gradient-to-r from-blue-400 to-purple-500 bg-clip-text text-transparent">
-          Gemini 3 Pro AI
-        </h1>
-        <div className="h-3 w-3 bg-green-500 rounded-full animate-pulse"></div>
-      </div>
+while True:
+    df = get_live_data()
+    if df is not None:
+        signal, price = analyze_advanced(df)
+        
+        # ট্রেইলিং স্টপ লস কনসেপ্ট (Profit Locking)
+        if signal == "🚀 STRONG BUY":
+            highest_price = max(highest_price, price)
+            trailing_sl = highest_price * (1 - TRAILING_PERCENT)
+            print(f"Targeting: {signal} | Trailing SL: ${trailing_sl:.2f}")
+        
+        # সিগন্যাল চেঞ্জ হলে লগ করা
+        if signal != last_signal and signal != "🟡 NEUTRAL":
+            print(f"NEW SIGNAL DETECTED: {signal}")
+            log_performance(signal, price)
+            last_signal = signal
 
-      {/* Chat Window */}
-      <div className="w-full max-w-2xl h-[60vh] overflow-y-auto space-y-4 p-4 scrollbar-hide">
-        {messages.map((msg) => (
-          <div key={msg.id} className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}>
-            <div className={`max-w-[80%] p-4 rounded-2xl ${
-              msg.sender === 'user' 
-              ? 'bg-blue-600 text-white rounded-tr-none' 
-              : 'bg-white/10 backdrop-blur-sm border border-white/10 rounded-tl-none'
-            }`}>
-              {msg.text}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {/* Input Field */}
-      <div className="w-full max-w-2xl mt-6 relative">
-        <input 
-          type="text"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask anything..."
-          className="w-full p-5 bg-white/5 border border-white/20 rounded-3xl focus:outline-none focus:ring-2 focus:ring-blue-500 backdrop-blur-xl"
-          onKeyPress={(e) => e.key === 'Enter' && handleSend()}
-        />
-        <button 
-          onClick={handleSend}
-          className="absolute right-3 top-3 bg-blue-500 hover:bg-blue-600 p-3 rounded-2xl transition-all"
-        >
-          🚀
-        </button>
-      </div>
-    </div>
-  );
-};
-
-export default AdvancedChatApp;
+    time.sleep(60) # প্রতি মিনিটে চেক করবে
