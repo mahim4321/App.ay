@@ -1,93 +1,64 @@
+import streamlit as st
 import pandas as pd
 import requests
-import time
-import os
+import plotly.graph_objects as go
 from datetime import datetime
 
-# --- সেটিংস ---
-SYMBOL = "ETHUSDT"
-INTERVAL = "15m"  # দ্রুত রেসপন্সের জন্য ১৫ মিনিট সেট করা হয়েছে
-TRAILING_PERCENT = 0.01  # ১% দাম বাড়লে স্টপ লস উপরে উঠবে
-
-# পারফরম্যান্স ট্র্যাকিং ফাইল
-LOG_FILE = "trade_log.csv"
+# পেজ সেটআপ
+st.set_page_config(page_title="ETH Pro Signal Bot", layout="wide")
 
 def get_live_data():
     url = "https://api.binance.com/api/v3/klines"
-    params = {"symbol": SYMBOL, "interval": INTERVAL, "limit": 100}
+    params = {"symbol": "ETHUSDT", "interval": "15m", "limit": 100}
     try:
-        response = requests.get(url, params=params, timeout=10)
+        response = requests.get(url, params=params)
         df = pd.DataFrame(response.json(), columns=['time', 'open', 'high', 'low', 'close', 'vol', 'close_time', 'q_vol', 'trades', 't_base', 't_quote', 'ignore'])
         df['close'] = df['close'].astype(float)
-        df['high'] = df['high'].astype(float)
-        df['low'] = df['low'].astype(float)
+        df['time'] = pd.to_datetime(df['time'], unit='ms')
         return df
-    except Exception as e:
-        print(f"Error: {e}")
+    except:
         return None
 
-def log_performance(signal, price):
-    # সিগন্যালগুলো একটি ফাইলে সেভ করে রাখবে যাতে পরে চেক করতে পারেন
-    if not os.path.isfile(LOG_FILE):
-        df = pd.DataFrame(columns=['Time', 'Signal', 'Price'])
-        df.to_csv(LOG_FILE, index=False)
-    
-    new_data = pd.DataFrame([[datetime.now(), signal, price]], columns=['Time', 'Signal', 'Price'])
-    new_data.to_csv(LOG_FILE, mode='a', header=False, index=False)
+st.title("🚀 ETH Real-Time Signal Dashboard")
 
-def analyze_advanced(df):
-    # RSI
-    delta = df['close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-    rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
-    
-    # EMA 20 & 50
-    ema_20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
-    ema_50 = df['close'].ewm(span=50, adjust=False).mean().iloc[-1]
-    
-    # MACD
-    exp1 = df['close'].ewm(span=12, adjust=False).mean()
-    exp2 = df['close'].ewm(span=26, adjust=False).mean()
-    macd = exp1 - exp2
-    signal_line = macd.ewm(span=9, adjust=False).mean()
-    
-    current_price = df['close'].iloc[-1]
-    m_val = macd.iloc[-1]
-    s_val = signal_line.iloc[-1]
-
-    print(f"\n--- {SYMBOL} ADVANCED ANALYSIS ---")
-    print(f"Price: ${current_price:.2f} | RSI: {rsi:.2f} | MACD: {m_val:.2f}")
-    
-    # অ্যাডভান্সড সিগন্যাল লজিক
-    signal = "🟡 NEUTRAL"
-    if rsi < 35 and current_price > ema_20 and m_val > s_val:
-        signal = "🚀 STRONG BUY"
-    elif rsi > 65 or (current_price < ema_20 and m_val < s_val):
-        signal = "⚠️ STRONG SELL"
-    
-    return signal, current_price
-
-# --- মেইন লুপ ---
-print(f"Starting Ultimate Bot for {SYMBOL}...")
-last_signal = ""
-highest_price = 0
-
-while True:
+# অটো রিফ্রেশ করার জন্য স্লাইডার বা বাটন
+if st.button('Update Data'):
     df = get_live_data()
     if df is not None:
-        signal, price = analyze_advanced(df)
+        current_price = df['close'].iloc[-1]
         
-        # ট্রেইলিং স্টপ লস কনসেপ্ট (Profit Locking)
-        if signal == "🚀 STRONG BUY":
-            highest_price = max(highest_price, price)
-            trailing_sl = highest_price * (1 - TRAILING_PERCENT)
-            print(f"Targeting: {signal} | Trailing SL: ${trailing_sl:.2f}")
+        # ক্যালকুলেশন (RSI, EMA, MACD)
+        delta = df['close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rsi = 100 - (100 / (1 + (gain / loss))).iloc[-1]
+        ema_20 = df['close'].ewm(span=20, adjust=False).mean().iloc[-1]
         
-        # সিগন্যাল চেঞ্জ হলে লগ করা
-        if signal != last_signal and signal != "🟡 NEUTRAL":
-            print(f"NEW SIGNAL DETECTED: {signal}")
-            log_performance(signal, price)
-            last_signal = signal
+        # সিগন্যাল লজিক
+        if rsi < 38 and current_price > ema_20:
+            signal = "BUY"
+            color = "green"
+        elif rsi > 62 or current_price < ema_20:
+            signal = "SELL"
+            color = "red"
+        else:
+            signal = "WAIT/NEUTRAL"
+            color = "gray"
 
-    time.sleep(60) # প্রতি মিনিটে চেক করবে
+        # ডিসপ্লে সিগন্যাল
+        st.markdown(f"<h1 style='text-align: center; color: {color}; font-size: 100px;'>{signal}</h1>", unsafe_allow_html=True)
+        
+        # প্রাইস এবং ইন্ডিকেটর মেট্রিক্স
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Current Price", f"${current_price:.2f}")
+        col2.metric("RSI (14)", f"{rsi:.2f}")
+        col3.metric("EMA 20", f"${ema_20:.2f}")
+
+        # লাইভ চার্ট
+        fig = go.Figure(data=[go.Candlestick(x=df['time'],
+                open=df['open'], high=df['high'],
+                low=df['low'], close=df['close'])])
+        fig.update_layout(title="ETH/USDT 15m Chart", template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
+
+st.write("Last updated:", datetime.now().strftime("%H:%M:%S"))
